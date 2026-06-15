@@ -247,7 +247,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
         </div>
         <div style="overflow-x:auto">
           <table class="data-table">
-            <thead><tr><th>Date</th><th>Time</th><th>Cycle</th><th>Items sent</th><th>Total</th><th>Missing</th><th>Missing detail</th><th>Status</th></tr></thead>
+            <thead><tr><th>Date</th><th>Time</th><th>Cycle</th><th>Items sent</th><th>Total</th><th>Missing detail</th><th>Status</th><th></th></tr></thead>
             <tbody id="history-body"></tbody>
           </table>
         </div>
@@ -302,6 +302,21 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
 </div>
 
 <div id="toast" class="toast" style="display:none"></div>
+
+<!-- Found Items Modal -->
+<div id="found-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:500;align-items:center;justify-content:center;padding:16px">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);width:100%;max-width:520px;max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.2)">
+    <div style="padding:18px 20px;border-bottom:0.5px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+      <span style="font-size:15px;font-weight:600" id="found-modal-title">Found missing items</span>
+      <button onclick="closeFoundModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-hint);line-height:1">×</button>
+    </div>
+    <div style="padding:18px 20px" id="found-modal-body"></div>
+    <div style="padding:14px 20px;border-top:0.5px solid var(--border);display:flex;justify-content:flex-end;gap:8px">
+      <button class="btn" onclick="closeFoundModal()">Cancel</button>
+      <button class="btn btn-green" onclick="saveFoundItems()"><i class="ti ti-device-floppy"></i> Save found items</button>
+    </div>
+  </div>
+</div>
 
 <script>
 // ── Firebase config ── REPLACE THESE VALUES WITH YOURS ──────────────────────
@@ -778,6 +793,7 @@ async function completeVerification(cycleId){
 
 // ── History ──────────────────────────────────────────────────────────────────
 function getFilteredCycles(){const from=document.getElementById('f-from')?.value;const to=document.getElementById('f-to')?.value;return washCycles.filter(c=>{const d=tsDate(c.startedAt);if(!d)return false;if(from&&d<new Date(from))return false;if(to&&d>new Date(to+'T23:59:59'))return false;return true;});}
+
 function renderHistory(){
   const fFrom=document.getElementById('f-from'),fTo=document.getElementById('f-to');
   if(fFrom&&!fFrom.value){const d=new Date();d.setMonth(d.getMonth()-3);fFrom.value=d.toISOString().split('T')[0];}
@@ -785,7 +801,12 @@ function renderHistory(){
   const filtered=getFilteredCycles();
   const hamperTotal=Object.values(hamperTotals).reduce((s,v)=>s+Math.max(0,v),0);
   const totalWashed=filtered.reduce((s,c)=>s+totalCount(c.itemsSent),0);
-  const totalMissing=filtered.reduce((s,c)=>s+totalCount(c.missing),0);
+  // Net missing = original missing minus anything found later
+  const totalMissing=filtered.reduce((s,c)=>{
+    const orig=totalCount(c.missing);
+    const found=(c.foundItems||[]).reduce((a,f)=>a+f.count,0);
+    return s+Math.max(0,orig-found);
+  },0);
   document.getElementById('h-cycles').textContent=filtered.length;
   document.getElementById('h-washed').textContent=totalWashed;
   document.getElementById('h-missing').textContent=totalMissing;
@@ -793,8 +814,149 @@ function renderHistory(){
   document.getElementById('h-hamper').textContent=hamperTotal;
   document.getElementById('h-count').textContent=filtered.length+' record'+(filtered.length!==1?'s':'');
   const tbody=document.getElementById('history-body');
-  if(!filtered.length){tbody.innerHTML=`<tr><td colspan="8"><div class="empty-state"><i class="ti ti-history"></i><p>No cycles in this period.<br>Try adjusting the date range.</p></div></td></tr>`;return;}
-  tbody.innerHTML=filtered.map(c=>{const missing=totalCount(c.missing);const status=c.status==='complete'?(missing>0?'incomplete':'clear'):c.status;const sp=status==='clear'?`<span class="pill pill-green">All clear</span>`:status==='incomplete'?`<span class="pill pill-red">Missing</span>`:status==='drying'?`<span class="pill pill-amber">Drying</span>`:`<span class="pill pill-blue">Washing</span>`;return`<tr><td style="font-weight:500;white-space:nowrap">${fmtDate(c.startedAt)}</td><td style="color:var(--text-muted);white-space:nowrap">${fmtTime(c.startedAt)}</td><td style="text-align:center"><span class="pill pill-blue">#${c.cycleNumber}</span></td><td style="font-size:11.5px;color:var(--text-muted);max-width:200px">${fmtItems(c.itemsSent)}</td><td style="font-weight:600;text-align:center">${totalCount(c.itemsSent)}</td><td style="text-align:center;font-weight:600;color:${missing>0?'var(--red)':'var(--text-hint)'}">${missing||'—'}</td><td style="font-size:11.5px;color:${missing>0?'var(--red)':'var(--text-hint)'}">${fmtItems(c.missing)}</td><td>${sp}</td></tr>`;}).join('');
+  if(!filtered.length){
+    tbody.innerHTML=`<tr><td colspan="9"><div class="empty-state"><i class="ti ti-history"></i><p>No cycles in this period.<br>Try adjusting the date range.</p></div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML=filtered.map(c=>{
+    const origMissing=totalCount(c.missing);
+    const foundTotal=(c.foundItems||[]).reduce((a,f)=>a+f.count,0);
+    const netMissing=Math.max(0,origMissing-foundTotal);
+    const status=c.status==='complete'?(netMissing>0?'incomplete':'clear'):c.status;
+    const sp=status==='clear'
+      ?`<span class="pill pill-green">All clear</span>`
+      :status==='incomplete'
+        ?`<span class="pill pill-red">${netMissing} missing</span>`
+        :status==='drying'
+          ?`<span class="pill pill-amber">Drying</span>`
+          :`<span class="pill pill-blue">Washing</span>`;
+
+    // Missing detail cell
+    let missingCell='<span style="color:var(--text-hint)">—</span>';
+    if(origMissing>0){
+      const missingLines=c.missing.map(m=>{
+        const foundEntry=(c.foundItems||[]).filter(f=>f.name===m.name);
+        const foundCount=foundEntry.reduce((a,f)=>a+f.count,0);
+        const stillMissing=Math.max(0,m.count-foundCount);
+        let line=`<span style="color:${stillMissing>0?'var(--red)':'var(--green)'}">${m.name} ×${m.count}</span>`;
+        if(foundCount>0){
+          const foundDates=foundEntry.map(f=>`${f.count} found ${f.foundAt?new Date(f.foundAt).toLocaleDateString('en-GB',{day:'2-digit',month:'short'}):'later'}`).join(', ');
+          line+=`<br><span style="font-size:10px;color:var(--green)">✓ ${foundDates}</span>`;
+        }
+        return line;
+      }).join('<br>');
+      missingCell=`<div style="font-size:11.5px;line-height:1.8">${missingLines}</div>`;
+    }
+
+    // Found items button — only show if cycle has missing items not fully resolved
+    const foundBtn=c.status==='complete'&&origMissing>0&&netMissing>0
+      ?`<button onclick="openFoundModal('${c.id}')" class="btn btn-sm" style="font-size:11px;color:var(--green);border-color:var(--green);white-space:nowrap"><i class="ti ti-search"></i> Found item</button>`
+      :'';
+
+    return`<tr>
+      <td style="font-weight:500;white-space:nowrap">${fmtDate(c.startedAt)}</td>
+      <td style="color:var(--text-muted);white-space:nowrap">${fmtTime(c.startedAt)}</td>
+      <td style="text-align:center"><span class="pill pill-blue">#${c.cycleNumber}</span></td>
+      <td style="font-size:11.5px;color:var(--text-muted);max-width:180px">${fmtItems(c.itemsSent)}</td>
+      <td style="font-weight:600;text-align:center">${totalCount(c.itemsSent)}</td>
+      <td style="text-align:center">${missingCell}</td>
+      <td>${sp}</td>
+      <td>${foundBtn}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Found items modal ─────────────────────────────────────────────────────────
+let _foundCycleId=null;
+let _foundCounts={};
+
+function openFoundModal(cycleId){
+  _foundCycleId=cycleId;
+  _foundCounts={};
+  const cycle=washCycles.find(c=>c.id===cycleId);
+  if(!cycle)return;
+
+  // Calculate what's still actually missing
+  const stillMissing=cycle.missing.map(m=>{
+    const found=(cycle.foundItems||[]).filter(f=>f.name===m.name).reduce((a,f)=>a+f.count,0);
+    return{name:m.name,missing:m.count,found,still:Math.max(0,m.count-found)};
+  }).filter(m=>m.still>0);
+
+  if(!stillMissing.length){toast('No missing items remaining for this cycle');return;}
+
+  // Build modal
+  const modal=document.getElementById('found-modal');
+  document.getElementById('found-modal-title').textContent=`Found missing items — cycle #${cycle.cycleNumber} (${fmtDate(cycle.startedAt)})`;
+  document.getElementById('found-modal-body').innerHTML=`
+    <p style="font-size:12px;color:var(--text-muted);margin-bottom:16px">
+      Enter how many of each missing item you found. Today's date will be recorded.
+    </p>
+    <table class="data-table">
+      <thead><tr><th>Item</th><th style="text-align:center">Still missing</th><th style="text-align:center">Found now</th></tr></thead>
+      <tbody>${stillMissing.map(m=>`
+        <tr>
+          <td><span style="display:flex;align-items:center;gap:7px"><i class="ti ${iconFor(m.name)}" style="font-size:15px;color:var(--text-hint)"></i>${m.name}</span></td>
+          <td style="text-align:center;font-weight:700;color:var(--red)">${m.still}</td>
+          <td style="text-align:center">
+            <div class="stepper" style="justify-content:center">
+              <button class="step-btn" onclick="stepFound('${m.name}',${m.still},-1)">−</button>
+              <span id="fc-${m.name.replace(/[^a-z]/gi,'_')}" style="font-size:15px;font-weight:700;min-width:36px;text-align:center">0</span>
+              <button class="step-btn" onclick="stepFound('${m.name}',${m.still},1)">+</button>
+            </div>
+            <button onclick="foundAll('${m.name}',${m.still})" style="margin-top:4px;font-size:10px;background:none;border:none;color:var(--green);cursor:pointer;text-decoration:underline">All ${m.still} found</button>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+  modal.style.display='flex';
+}
+
+function stepFound(name,max,delta){
+  _foundCounts[name]=Math.max(0,Math.min(max,(_foundCounts[name]||0)+delta));
+  const el=document.getElementById('fc-'+name.replace(/[^a-z]/gi,'_'));
+  if(el)el.textContent=_foundCounts[name];
+}
+
+function foundAll(name,max){
+  _foundCounts[name]=max;
+  const el=document.getElementById('fc-'+name.replace(/[^a-z]/gi,'_'));
+  if(el)el.textContent=max;
+}
+
+function closeFoundModal(){
+  document.getElementById('found-modal').style.display='none';
+  _foundCycleId=null;
+  _foundCounts={};
+}
+
+async function saveFoundItems(){
+  const cycle=washCycles.find(c=>c.id===_foundCycleId);
+  if(!cycle)return;
+  const entries=Object.entries(_foundCounts).filter(([,v])=>v>0);
+  if(!entries.length){toast('Enter at least one item found');return;}
+
+  const today=new Date().toISOString();
+  const newFound=[...(cycle.foundItems||[]),...entries.map(([name,count])=>({name,count,foundAt:today}))];
+
+  // Recalculate net missing
+  const newMissing=cycle.missing.map(m=>{
+    const found=newFound.filter(f=>f.name===m.name).reduce((a,f)=>a+f.count,0);
+    return{...m,count:Math.max(0,m.count-found)};
+  });
+  const netMissingTotal=newMissing.reduce((s,m)=>s+m.count,0);
+
+  try{
+    await db.collection('washCycles').doc(_foundCycleId).update({
+      foundItems:newFound,
+      missing:newMissing,
+      status:netMissingTotal===0?'complete':'complete',
+      updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+    });
+    closeFoundModal();
+    toast(netMissingTotal===0
+      ?'All missing items found — cycle is fully resolved!'
+      :'Found items recorded. '+netMissingTotal+' item(s) still missing.');
+  }catch(e){toast('Error saving');console.error(e);}
 }
 
 // ── Analytics ────────────────────────────────────────────────────────────────
