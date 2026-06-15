@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LaundryLog</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css" />
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+
+<!-- Sidebar -->
+<div class="app-shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-icon"><i class="ti ti-shirt"></i></div>
+      <span>LaundryLog</span>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-section">Main</div>
+      <a class="nav-item active" data-page="dashboard" onclick="navigate('dashboard')">
+        <i class="ti ti-layout-dashboard"></i> Dashboard
+      </a>
+      <a class="nav-item" data-page="hamper" onclick="navigate('hamper')">
+        <i class="ti ti-basket"></i> Hamper
+      </a>
+      <a class="nav-item" data-page="washday" onclick="navigate('washday')">
+        <i class="ti ti-wash"></i> Wash day
+      </a>
+      <div class="nav-section">Records</div>
+      <a class="nav-item" data-page="history" onclick="navigate('history')">
+        <i class="ti ti-history"></i> Full history
+      </a>
+      <a class="nav-item" data-page="analytics" onclick="navigate('analytics')">
+        <i class="ti ti-chart-bar"></i> Analytics
+      </a>
+      <div class="nav-section">Settings</div>
+      <a class="nav-item" data-page="settings" onclick="navigate('settings')">
+        <i class="ti ti-settings"></i> Settings
+      </a>
+    </nav>
+    <div class="sidebar-footer">LaundryLog v1.0</div>
+  </aside>
+
+  <!-- Mobile top bar -->
+  <div class="mobile-topbar">
+    <button class="mobile-menu-btn" onclick="toggleSidebar()"><i class="ti ti-menu-2"></i></button>
+    <span class="mobile-title" id="mobile-title">Dashboard</span>
+    <div style="width:36px"></div>
+  </div>
+  <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
+
+  <!-- Main content -->
+  <main class="main-content">
+
+    <!-- ═══════════════════════════════════════════════════ DASHBOARD -->
+    <div id="page-dashboard" class="page active">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Dashboard</h1>
+          <p class="page-sub" id="today-date"></p>
+        </div>
+        <button class="btn btn-green" onclick="navigate('washday')"><i class="ti ti-wash"></i> Wash day</button>
+      </div>
+
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-label">In hamper</div>
+          <div class="metric-value mv-green" id="m-hamper">0</div>
+          <div class="metric-sub">items ready</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Active cycle</div>
+          <div class="metric-value mv-amber" id="m-cycle">—</div>
+          <div class="metric-sub" id="m-cycle-sub">No active wash</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Missing this month</div>
+          <div class="metric-value mv-red" id="m-missing">0</div>
+          <div class="metric-sub">items not returned</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Total cycles</div>
+          <div class="metric-value" id="m-total-cycles">0</div>
+          <div class="metric-sub">all time</div>
+        </div>
+      </div>
+
+      <div class="two-col">
+        <!-- Quick add -->
+        <div class="card">
+          <div class="card-title">Quick add to hamper <i class="ti ti-basket" style="color:var(--green);font-size:16px"></i></div>
+          <div class="ac-wrap">
+            <input class="ac-input" id="ac-input" placeholder="Type to add custom item…" oninput="acFilter(this.value)" onblur="setTimeout(()=>closeAC(),200)" onkeydown="acKeydown(event)" autocomplete="off" />
+            <div class="ac-drop" id="ac-drop"></div>
+          </div>
+          <div id="qa-list"></div>
+          <div style="display:flex;gap:8px;margin-top:14px;padding-top:12px;border-top:0.5px solid var(--border)">
+            <button class="btn btn-danger" style="flex:1;justify-content:center" onclick="commitHamper('remove')"><i class="ti ti-minus"></i> Remove</button>
+            <button class="btn btn-green" style="flex:1;justify-content:center" onclick="commitHamper('add')"><i class="ti ti-plus"></i> Add to hamper</button>
+          </div>
+          <div id="qa-msg" style="font-size:12px;min-height:16px;text-align:center;margin-top:8px"></div>
+        </div>
+
+        <!-- Hamper contents -->
+        <div class="card">
+          <div class="card-title">Hamper contents <span class="pill pill-green" id="hamper-badge">0 items</span></div>
+          <div id="hamper-contents"></div>
+        </div>
+      </div>
+
+      <!-- Active cycle strip -->
+      <div id="active-cycle-strip" style="display:none" class="card" style="margin-bottom:16px">
+        <div class="card-title">
+          <span id="active-cycle-title">Machine wash</span>
+          <span class="pill pill-amber" id="active-cycle-status">drying</span>
+        </div>
+        <div class="machine-grid" id="active-cycle-grid"></div>
+        <div style="margin-top:12px">
+          <button class="btn btn-sm btn-green" onclick="navigate('washday')"><i class="ti ti-check"></i> Verify returned items</button>
+        </div>
+      </div>
+
+      <!-- Charts -->
+      <div class="chart-row">
+        <div class="card">
+          <div class="card-title">Monthly overview</div>
+          <div class="chart-legend">
+            <span class="leg-item"><span class="leg-sq" style="background:#5DCAA5"></span>Items washed</span>
+            <span class="leg-item"><span class="leg-sq" style="background:#F09595"></span>Missing</span>
+            <span class="leg-item"><span class="leg-sq" style="background:#378ADD;border-radius:50%"></span>Cycles</span>
+          </div>
+          <div style="position:relative;height:200px"><canvas id="main-chart"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-title">By type this month</div>
+          <div style="position:relative;height:140px;margin-bottom:10px"><canvas id="type-chart"></canvas></div>
+          <div id="type-legend" style="display:grid;grid-template-columns:1fr 1fr;gap:4px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════ HAMPER PAGE -->
+    <div id="page-hamper" class="page">
+      <div class="page-header">
+        <div><h1 class="page-title">Hamper log</h1><p class="page-sub">All clothing entries</p></div>
+        <span class="pill pill-green" id="hamper-page-badge" style="font-size:13px;padding:5px 14px">0 items</span>
+      </div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title">Current hamper breakdown</div>
+        <div id="hamper-breakdown"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Entry log <span id="hamper-entry-count" style="font-weight:400;color:var(--text-muted)"></span></div>
+        <div style="overflow-x:auto"><table class="data-table" id="hamper-entry-table">
+          <thead><tr><th>Date</th><th>Time</th><th>Items</th><th>Count</th><th></th></tr></thead>
+          <tbody id="hamper-entry-body"></tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════ WASH DAY -->
+    <div id="page-washday" class="page">
+      <div class="page-header">
+        <div><h1 class="page-title">Wash day</h1><p class="page-sub" id="washday-sub">Move items from hamper to machine</p></div>
+        <span class="pill pill-amber" id="washday-status-pill" style="display:none;font-size:13px;padding:5px 14px"></span>
+      </div>
+      <div id="washday-content"></div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════ HISTORY -->
+    <div id="page-history" class="page">
+      <div class="page-header">
+        <div><h1 class="page-title">Wash history</h1><p class="page-sub">Complete record of every cycle</p></div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-sm" onclick="doExportExcel()"><i class="ti ti-table-export"></i> Excel</button>
+          <button class="btn btn-sm" onclick="doExportPDF()"><i class="ti ti-file-type-pdf"></i> PDF</button>
+        </div>
+      </div>
+      <div class="metrics-grid" style="margin-bottom:16px">
+        <div class="metric-card"><div class="metric-label">Cycles in period</div><div class="metric-value" id="h-cycles">0</div></div>
+        <div class="metric-card"><div class="metric-label">Items washed</div><div class="metric-value mv-green" id="h-washed">0</div></div>
+        <div class="metric-card"><div class="metric-label">Items missing</div><div class="metric-value mv-red" id="h-missing">0</div></div>
+        <div class="metric-card"><div class="metric-label">In hamper now</div><div class="metric-value" id="h-hamper">0</div></div>
+      </div>
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+          <div class="filter-bar">
+            <i class="ti ti-filter" style="font-size:15px;color:var(--text-hint)"></i>
+            <span style="font-size:12px;color:var(--text-muted)">From</span>
+            <input type="date" id="f-from" onchange="renderHistory()">
+            <span style="font-size:12px;color:var(--text-muted)">to</span>
+            <input type="date" id="f-to" onchange="renderHistory()">
+            <span class="pill pill-green" id="h-count">0 records</span>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-sm" onclick="doExportExcel()"><i class="ti ti-table-export"></i> Export filtered</button>
+            <button class="btn btn-sm" onclick="doExportPDF()"><i class="ti ti-file-type-pdf"></i> PDF</button>
+          </div>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead><tr><th>Date</th><th>Time</th><th>Cycle</th><th>Items sent</th><th>Total</th><th>Missing</th><th>Missing detail</th><th>Status</th></tr></thead>
+            <tbody id="history-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════ ANALYTICS -->
+    <div id="page-analytics" class="page">
+      <div class="page-header"><div><h1 class="page-title">Analytics</h1><p class="page-sub">Trends across all wash cycles</p></div></div>
+      <div class="metrics-grid" style="margin-bottom:16px">
+        <div class="metric-card"><div class="metric-label">Total cycles</div><div class="metric-value" id="a-cycles">0</div><div class="metric-sub">completed</div></div>
+        <div class="metric-card"><div class="metric-label">Total washed</div><div class="metric-value mv-green" id="a-washed">0</div><div class="metric-sub">items all time</div></div>
+        <div class="metric-card"><div class="metric-label">Avg per cycle</div><div class="metric-value" id="a-avg">0</div><div class="metric-sub">items</div></div>
+        <div class="metric-card"><div class="metric-label">Loss rate</div><div class="metric-value" id="a-loss">0%</div><div class="metric-sub">go missing</div></div>
+      </div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title">Items washed per month</div>
+        <div class="chart-legend">
+          <span class="leg-item"><span class="leg-sq" style="background:#5DCAA5"></span>Washed</span>
+          <span class="leg-item"><span class="leg-sq" style="background:#F09595"></span>Missing</span>
+        </div>
+        <div style="position:relative;height:200px"><canvas id="a-monthly-chart"></canvas></div>
+      </div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title">Wash frequency (cycles per month)</div>
+        <div style="position:relative;height:160px"><canvas id="a-freq-chart"></canvas></div>
+      </div>
+      <div class="two-col">
+        <div class="card">
+          <div class="card-title">Items by type — all time</div>
+          <div style="position:relative;height:160px;margin-bottom:12px"><canvas id="a-type-chart"></canvas></div>
+          <div id="a-type-list"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Most missing items</div>
+          <div style="position:relative;height:160px;margin-bottom:12px"><canvas id="a-missing-chart"></canvas></div>
+          <div id="a-missing-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════ SETTINGS -->
+    <div id="page-settings" class="page">
+      <div class="page-header"><div><h1 class="page-title">Settings</h1><p class="page-sub">Manage clothing categories</p></div></div>
+      <div class="card">
+        <div class="card-title">Custom clothing items</div>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">Add items beyond the defaults. They appear in autocomplete everywhere.</p>
+        <div style="display:flex;gap:8px;margin-bottom:16px">
+          <input class="ac-input" id="new-item-input" style="flex:1" placeholder="e.g. Kurta, Shalwar, Shorts…" onkeydown="if(event.key==='Enter')addCustomItem()">
+          <button class="btn btn-green" onclick="addCustomItem()"><i class="ti ti-plus"></i> Add</button>
+        </div>
+        <div id="custom-items-list" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px"></div>
+        <div style="padding-top:12px;border-top:0.5px solid var(--border)">
+          <div style="font-size:11px;color:var(--text-hint);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em">Default items</div>
+          <div id="default-items-pills" style="display:flex;flex-wrap:wrap;gap:5px"></div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="toast" style="display:none"></div>
+
+<script src="firebase-config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
