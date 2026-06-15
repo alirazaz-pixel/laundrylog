@@ -447,46 +447,239 @@ function renderHamperPage(){
 async function deleteEntry(id){await db.collection('hamperEntries').doc(id).delete();toast('Entry deleted');}
 
 // ── Wash day ─────────────────────────────────────────────────────────────────
+// Logic: one active cycle doc accumulates multiple batches.
+// itemsSent = merged totals across all batches.
+// batches = [{sentAt, items}] — each press of "Send to machine" is one batch.
+// Verify is against the merged itemsSent total.
+
+function getMergedSent(cycle){
+  // Build merged totals from all batches
+  const merged={};
+  (cycle.batches||[]).forEach(b=>b.items.forEach(i=>{merged[i.name]=(merged[i.name]||0)+i.count;}));
+  // Fallback for old cycles that have itemsSent directly
+  if(!cycle.batches&&cycle.itemsSent) cycle.itemsSent.forEach(i=>{merged[i.name]=(merged[i.name]||0)+i.count;});
+  return merged;
+}
+
 function renderWashDay(){
   const activeCycle=washCycles.find(c=>c.status!=='complete');
-  const nextNum=washCycles.length+1;
+  const nextNum=washCycles.filter(c=>c.status==='complete').length+1;
   const hamperItems=Object.entries(hamperTotals).filter(([,v])=>v>0);
   const pill=document.getElementById('washday-status-pill');
   const sub=document.getElementById('washday-sub');
   const content=document.getElementById('washday-content');
-  if(!activeCycle){
-    if(!Object.keys(machineItems).length)machineItems=Object.fromEntries(hamperItems);
-    pill.style.display='none';sub.textContent='Move items from hamper to machine';
-    content.innerHTML=`<div class="card"><div class="card-title">Items going into the machine <span class="pill pill-blue">Cycle #${nextNum}</span></div>${hamperItems.length===0?`<div class="empty-state"><i class="ti ti-basket"></i><p>Hamper is empty.<br>Add items from Dashboard first.</p></div>`:`<p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">Adjust quantities — these will be deducted from your hamper.</p><table class="data-table"><thead><tr><th>Item</th><th>In hamper</th><th>Sending to machine</th></tr></thead><tbody>${hamperItems.map(([name,total])=>`<tr><td><span style="display:flex;align-items:center;gap:7px"><i class="ti ${iconFor(name)}" style="font-size:16px;color:var(--text-hint)"></i>${name}</span></td><td style="font-weight:600">${total}</td><td><div class="stepper"><button class="step-btn" onclick="stepMachine('${name}',-1)">−</button><span class="step-val" id="mv-${name.replace(/[^a-z]/gi,'_')}">${machineItems[name]||0}</span><button class="step-btn" onclick="stepMachine('${name}',1)">+</button></div></td></tr>`).join('')}</tbody></table><div style="margin-top:16px;padding-top:14px;border-top:0.5px solid var(--border);display:flex;justify-content:space-between;align-items:center"><span style="font-size:13px;color:var(--text-muted)">Total: <strong id="machine-total">${Object.values(machineItems).reduce((s,v)=>s+v,0)}</strong> items</span><button class="btn btn-green" onclick="startWash()"><i class="ti ti-wash"></i> Start wash cycle</button></div>`}</div>`;
-  }else{
-    pill.style.display='inline-block';pill.textContent=activeCycle.status;sub.textContent=`Active cycle #${activeCycle.cycleNumber} — verify returned items`;
-    activeCycle.itemsSent?.forEach(i=>{if(verifyItems[i.name]===undefined)verifyItems[i.name]=i.count;});
-    content.innerHTML=`<div class="card"><div class="card-title">Count what came back — cycle #${activeCycle.cycleNumber}</div><p style="font-size:12px;color:var(--text-muted);margin-bottom:16px">Enter the exact number of each item after drying.</p><table class="data-table"><thead><tr><th>Item</th><th>Sent to wash</th><th>Count returned</th><th>Result</th></tr></thead><tbody>${(activeCycle.itemsSent||[]).map(item=>{const ret=verifyItems[item.name]!==undefined?verifyItems[item.name]:item.count;const diff=ret-item.count;const rp=diff===0?`<span class="pill pill-green">✓ All back</span>`:diff<0?`<span class="pill pill-red">${Math.abs(diff)} missing</span>`:`<span class="pill pill-amber">+${diff} extra</span>`;return`<tr><td><span style="display:flex;align-items:center;gap:7px"><i class="ti ${iconFor(item.name)}" style="font-size:16px;color:var(--text-hint)"></i>${item.name}</span></td><td style="font-weight:600">${item.count}</td><td><input class="verify-input" type="number" min="0" value="${ret}" onchange="setVerify('${item.name}',this.value)" oninput="setVerify('${item.name}',this.value)"></td><td id="vr-${item.name.replace(/[^a-z]/gi,'_')}">${rp}</td></tr>`;}).join('')}</tbody></table><div style="margin-top:16px;padding-top:14px;border-top:0.5px solid var(--border);display:flex;justify-content:space-between;align-items:center"><div id="verify-summary" style="font-size:13px">${getVerifySummary(activeCycle)}</div><button class="btn btn-green" onclick="completeVerification('${activeCycle.id}')"><i class="ti ti-check"></i> Complete &amp; verify</button></div></div>`;
+
+  // Always show the send-to-machine form (top), plus verify section if active cycle exists
+  pill.style.display= activeCycle?'inline-block':'none';
+  if(activeCycle) pill.textContent='Washing / drying';
+
+  // ── Top section: send more items to machine ──────────────────────────────
+  sub.textContent= activeCycle
+    ? `Cycle #${activeCycle.cycleNumber} active — send more items or verify returned`
+    : 'Select items to send to machine';
+
+  if(!Object.keys(machineItems).length && hamperItems.length){
+    machineItems=Object.fromEntries(hamperItems.map(([n])=>[n,0]));
   }
+
+  const sendSection= hamperItems.length===0
+    ? `<div class="empty-state"><i class="ti ti-basket"></i><p>Hamper is empty.<br>Add items from Dashboard first.</p></div>`
+    : `<p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">
+        Select how many items to send to machine now. You can send again later without verifying first.
+       </p>
+       <table class="data-table">
+         <thead><tr><th>Item</th><th>In hamper</th><th>Sending now</th></tr></thead>
+         <tbody>${hamperItems.map(([name,total])=>`
+           <tr>
+             <td><span style="display:flex;align-items:center;gap:7px"><i class="ti ${iconFor(name)}" style="font-size:16px;color:var(--text-hint)"></i>${name}</span></td>
+             <td style="font-weight:600">${total}</td>
+             <td><div class="stepper">
+               <button class="step-btn" onclick="stepMachine('${name}',-1)">−</button>
+               <span class="step-val" id="mv-${name.replace(/[^a-z]/gi,'_')}">${machineItems[name]||0}</span>
+               <button class="step-btn" onclick="stepMachine('${name}',1)">+</button>
+             </div></td>
+           </tr>`).join('')}
+         </tbody>
+       </table>
+       <div style="margin-top:16px;padding-top:14px;border-top:0.5px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+         <span style="font-size:13px;color:var(--text-muted)">Sending: <strong id="machine-total">${Object.values(machineItems).reduce((s,v)=>s+v,0)}</strong> items</span>
+         <button class="btn btn-green" onclick="startWash()"><i class="ti ti-wash"></i> Send to machine</button>
+       </div>`;
+
+  // ── Active cycle summary — what's currently in machine ───────────────────
+  let activeSummarySection='';
+  if(activeCycle){
+    const merged=getMergedSent(activeCycle);
+    const mergedArr=Object.entries(merged).filter(([,v])=>v>0);
+    const batches=activeCycle.batches||[];
+    activeSummarySection=`
+      <div class="card">
+        <div class="card-title">
+          Currently in machine — cycle #${activeCycle.cycleNumber}
+          <span style="font-size:11px;font-weight:400;color:var(--text-muted)">${batches.length} batch${batches.length!==1?'es':''} sent</span>
+        </div>
+        <!-- Merged totals -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;margin-bottom:14px">
+          ${mergedArr.map(([name,count])=>`
+            <div style="background:var(--amber-light);border-radius:var(--radius);padding:10px 12px;border-left:3px solid var(--amber)">
+              <div style="font-size:11px;color:var(--text-muted);margin-bottom:3px">${name}</div>
+              <div style="font-size:22px;font-weight:700;color:var(--amber)">${count}</div>
+            </div>`).join('')}
+        </div>
+        <!-- Batch history -->
+        ${batches.length>1?`
+          <div style="font-size:11px;color:var(--text-hint);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em">Batch history</div>
+          ${batches.map((b,i)=>`
+            <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:0.5px solid var(--border);font-size:12px">
+              <span class="pill pill-blue">Batch ${i+1}</span>
+              <span style="color:var(--text-muted)">${b.sentAt?new Date(b.sentAt.seconds?b.sentAt.seconds*1000:b.sentAt).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):'—'}</span>
+              <span style="color:var(--text);">${b.items.map(i=>`${i.name} ×${i.count}`).join(', ')}</span>
+            </div>`).join('')}
+        `:''}
+        <!-- Verify button -->
+        <div style="margin-top:14px;padding-top:12px;border-top:0.5px solid var(--border)">
+          <button class="btn btn-green" onclick="showVerifySection()" id="show-verify-btn"><i class="ti ti-check"></i> All clothes back — verify now</button>
+        </div>
+      </div>`;
+  }
+
+  // ── Verify section (hidden until button clicked) ──────────────────────────
+  let verifySection='';
+  if(activeCycle){
+    const merged=getMergedSent(activeCycle);
+    const mergedArr=Object.entries(merged).filter(([,v])=>v>0);
+    mergedArr.forEach(([name,count])=>{if(verifyItems[name]===undefined)verifyItems[name]=count;});
+    verifySection=`
+      <div class="card" id="verify-section" style="display:none">
+        <div class="card-title">Count what came back — cycle #${activeCycle.cycleNumber}</div>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:16px">
+          Count every item that came back from washing and drying. Enter exact numbers below.
+        </p>
+        <table class="data-table">
+          <thead><tr><th>Item</th><th>Total sent to wash</th><th>Count returned</th><th>Result</th></tr></thead>
+          <tbody>${mergedArr.map(([name,count])=>{
+            const ret=verifyItems[name]!==undefined?verifyItems[name]:count;
+            const diff=ret-count;
+            const rp=diff===0?`<span class="pill pill-green">✓ All back</span>`:diff<0?`<span class="pill pill-red">${Math.abs(diff)} missing</span>`:`<span class="pill pill-amber">+${diff} extra</span>`;
+            return`<tr>
+              <td><span style="display:flex;align-items:center;gap:7px"><i class="ti ${iconFor(name)}" style="font-size:16px;color:var(--text-hint)"></i>${name}</span></td>
+              <td style="font-weight:600;color:var(--amber)">${count}</td>
+              <td><input class="verify-input" type="number" min="0" value="${ret}" onchange="setVerify('${name}',this.value,${count})" oninput="setVerify('${name}',this.value,${count})"></td>
+              <td id="vr-${name.replace(/[^a-z]/gi,'_')}">${rp}</td>
+            </tr>`;}).join('')}
+          </tbody>
+        </table>
+        <div style="margin-top:16px;padding-top:14px;border-top:0.5px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+          <div id="verify-summary" style="font-size:13px">${getVerifySummary(merged)}</div>
+          <button class="btn btn-green" onclick="completeVerification('${activeCycle.id}')"><i class="ti ti-check"></i> Complete &amp; verify</button>
+        </div>
+      </div>`;
+  }
+
+  content.innerHTML=`
+    <div class="card"><div class="card-title">Send items to machine ${activeCycle?`<span class="pill pill-amber">Add to cycle #${activeCycle.cycleNumber}</span>`:''}</div>${sendSection}</div>
+    ${activeSummarySection}
+    ${verifySection}`;
 }
-function stepMachine(name,d){const max=hamperTotals[name]||0;machineItems[name]=Math.max(0,Math.min(max,(machineItems[name]||0)+d));const el=document.getElementById('mv-'+name.replace(/[^a-z]/gi,'_'));if(el)el.textContent=machineItems[name];const tot=document.getElementById('machine-total');if(tot)tot.textContent=Object.values(machineItems).reduce((s,v)=>s+v,0);}
-function setVerify(name,val){verifyItems[name]=Math.max(0,Number(val)||0);const activeCycle=washCycles.find(c=>c.status!=='complete');if(!activeCycle)return;const item=activeCycle.itemsSent?.find(i=>i.name===name);if(!item)return;const diff=verifyItems[name]-item.count;const pill=diff===0?`<span class="pill pill-green">✓ All back</span>`:diff<0?`<span class="pill pill-red">${Math.abs(diff)} missing</span>`:`<span class="pill pill-amber">+${diff} extra</span>`;const el=document.getElementById('vr-'+name.replace(/[^a-z]/gi,'_'));if(el)el.innerHTML=pill;const sum=document.getElementById('verify-summary');if(sum)sum.innerHTML=getVerifySummary(activeCycle);}
-function getVerifySummary(cycle){const m=(cycle.itemsSent||[]).reduce((s,item)=>{const ret=verifyItems[item.name]!==undefined?verifyItems[item.name]:item.count;return s+Math.max(0,item.count-ret);},0);return m>0?`<span style="color:var(--red)"><i class="ti ti-alert-circle"></i> ${m} item(s) will be marked missing</span>`:`<span style="color:var(--green)"><i class="ti ti-circle-check"></i> All items accounted for</span>`;}
+
+function showVerifySection(){
+  const vs=document.getElementById('verify-section');
+  const btn=document.getElementById('show-verify-btn');
+  if(vs){vs.style.display='block';vs.scrollIntoView({behavior:'smooth',block:'start'});}
+  if(btn)btn.style.display='none';
+}
+
+function stepMachine(name,d){
+  const max=hamperTotals[name]||0;
+  machineItems[name]=Math.max(0,Math.min(max,(machineItems[name]||0)+d));
+  const el=document.getElementById('mv-'+name.replace(/[^a-z]/gi,'_'));
+  if(el)el.textContent=machineItems[name];
+  const tot=document.getElementById('machine-total');
+  if(tot)tot.textContent=Object.values(machineItems).reduce((s,v)=>s+v,0);
+}
+
+function setVerify(name,val,sentCount){
+  verifyItems[name]=Math.max(0,Number(val)||0);
+  const diff=verifyItems[name]-sentCount;
+  const pill=diff===0?`<span class="pill pill-green">✓ All back</span>`:diff<0?`<span class="pill pill-red">${Math.abs(diff)} missing</span>`:`<span class="pill pill-amber">+${diff} extra</span>`;
+  const el=document.getElementById('vr-'+name.replace(/[^a-z]/gi,'_'));
+  if(el)el.innerHTML=pill;
+  const activeCycle=washCycles.find(c=>c.status!=='complete');
+  if(activeCycle){const sum=document.getElementById('verify-summary');if(sum)sum.innerHTML=getVerifySummary(getMergedSent(activeCycle));}
+}
+
+function getVerifySummary(mergedSent){
+  const m=Object.entries(mergedSent).reduce((s,[name,count])=>{
+    const ret=verifyItems[name]!==undefined?verifyItems[name]:count;
+    return s+Math.max(0,count-ret);
+  },0);
+  return m>0
+    ?`<span style="color:var(--red)"><i class="ti ti-alert-circle"></i> ${m} item(s) will be marked missing</span>`
+    :`<span style="color:var(--green)"><i class="ti ti-circle-check"></i> All items accounted for</span>`;
+}
+
 async function startWash(){
   const items=Object.entries(machineItems).filter(([,v])=>v>0).map(([name,count])=>({name,count}));
-  if(!items.length){toast('Select at least one item');return;}
-  const nextNum=washCycles.length+1;
+  if(!items.length){toast('Select at least one item first');return;}
+
+  // Deduct from hamper
   const newTotals={...hamperTotals};
   items.forEach(({name,count})=>{newTotals[name]=Math.max(0,(newTotals[name]||0)-count);});
+
+  const activeCycle=washCycles.find(c=>c.status!=='complete');
+  const batch={sentAt:new Date().toISOString(),items};
+
   try{
     await db.collection('hamperTotals').doc('default').set({totals:newTotals,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
-    await db.collection('washCycles').add({cycleNumber:nextNum,status:'drying',itemsSent:items,itemsBack:[],missing:[],startedAt:firebase.firestore.FieldValue.serverTimestamp(),completedAt:null});
-    machineItems={};toast('Wash cycle #'+nextNum+' started!');
+
+    if(activeCycle){
+      // Add batch to existing active cycle — merge totals
+      const existingBatches=activeCycle.batches||[];
+      const newBatches=[...existingBatches,batch];
+      // Rebuild merged itemsSent
+      const merged={};
+      newBatches.forEach(b=>b.items.forEach(i=>{merged[i.name]=(merged[i.name]||0)+i.count;}));
+      const mergedArr=Object.entries(merged).map(([name,count])=>({name,count}));
+      await db.collection('washCycles').doc(activeCycle.id).update({
+        batches:newBatches,
+        itemsSent:mergedArr,
+        updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+      });
+      toast(`Added to cycle #${activeCycle.cycleNumber} — ${items.map(i=>`${i.name} ×${i.count}`).join(', ')}`);
+    }else{
+      // Start a new cycle
+      const nextNum=washCycles.filter(c=>c.status==='complete').length+1;
+      await db.collection('washCycles').add({
+        cycleNumber:nextNum,status:'drying',
+        batches:[batch],
+        itemsSent:items,
+        itemsBack:[],missing:[],
+        startedAt:firebase.firestore.FieldValue.serverTimestamp(),completedAt:null
+      });
+      toast(`Cycle #${nextNum} started — ${items.map(i=>`${i.name} ×${i.count}`).join(', ')}`);
+    }
+    machineItems={};
+    verifyItems={};
   }catch(e){toast('Error — check Firebase config');console.error(e);}
 }
+
 async function completeVerification(cycleId){
   const cycle=washCycles.find(c=>c.id===cycleId);if(!cycle)return;
-  const itemsBack=(cycle.itemsSent||[]).map(i=>({name:i.name,count:verifyItems[i.name]!==undefined?Number(verifyItems[i.name]):i.count}));
+  const merged=getMergedSent(cycle);
+  const itemsBack=Object.entries(merged).map(([name,count])=>({name,count:verifyItems[name]!==undefined?Number(verifyItems[name]):count}));
   const missing=[];
-  (cycle.itemsSent||[]).forEach(sent=>{const back=itemsBack.find(b=>b.name===sent.name);if(back&&back.count<sent.count)missing.push({name:sent.name,count:sent.count-back.count});});
+  Object.entries(merged).forEach(([name,sentCount])=>{
+    const back=itemsBack.find(b=>b.name===name);
+    if(back&&back.count<sentCount)missing.push({name,count:sentCount-back.count});
+  });
   try{
-    await db.collection('washCycles').doc(cycleId).update({itemsBack,missing,status:'complete',completedAt:firebase.firestore.FieldValue.serverTimestamp()});
-    verifyItems={};toast(missing.length?`Cycle complete — ${missing.reduce((s,m)=>s+m.count,0)} item(s) missing`:'Cycle complete — all items accounted for!');
+    await db.collection('washCycles').doc(cycleId).update({
+      itemsBack,missing,status:'complete',
+      completedAt:firebase.firestore.FieldValue.serverTimestamp()
+    });
+    verifyItems={};
+    machineItems={};
+    toast(missing.length?`Cycle complete — ${missing.reduce((s,m)=>s+m.count,0)} item(s) missing`:'Cycle complete — all items accounted for!');
   }catch(e){toast('Error saving');console.error(e);}
 }
 
