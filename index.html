@@ -556,30 +556,58 @@ function renderWashDay(){
   if(activeCycle){
     const merged=getMergedSent(activeCycle);
     const mergedArr=Object.entries(merged).filter(([,v])=>v>0);
-    mergedArr.forEach(([name,count])=>{if(verifyItems[name]===undefined)verifyItems[name]=count;});
+    // Default verify inputs to 0 so user must physically count and enter — not pre-filled
+    mergedArr.forEach(([name])=>{if(verifyItems[name]===undefined)verifyItems[name]=0;});
     verifySection=`
       <div class="card" id="verify-section" style="display:none">
-        <div class="card-title">Count what came back — cycle #${activeCycle.cycleNumber}</div>
-        <p style="font-size:12px;color:var(--text-muted);margin-bottom:16px">
-          Count every item that came back from washing and drying. Enter exact numbers below.
+        <div class="card-title">Count returned items — cycle #${activeCycle.cycleNumber}</div>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:4px">
+          Physically count what came back. Enter the exact number for each item.
+          If everything came back, tap <strong>✓ All back</strong> on that row. If less came back, type the lower number — missing items will be flagged automatically.
         </p>
+        <div style="margin-bottom:14px;padding:8px 12px;background:var(--amber-light);border-radius:var(--radius);font-size:12px;color:var(--amber)">
+          <i class="ti ti-info-circle"></i> All counts start at <strong>0</strong>. Enter what you physically counted, or tap ✓ if the full amount came back.
+        </div>
         <table class="data-table">
-          <thead><tr><th>Item</th><th>Total sent to wash</th><th>Count returned</th><th>Result</th></tr></thead>
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th style="text-align:center">Sent</th>
+              <th style="text-align:center">Returned</th>
+              <th style="text-align:center">Quick</th>
+              <th>Result</th>
+            </tr>
+          </thead>
           <tbody>${mergedArr.map(([name,count])=>{
-            const ret=verifyItems[name]!==undefined?verifyItems[name]:count;
+            const ret=verifyItems[name]!==undefined?verifyItems[name]:0;
             const diff=ret-count;
-            const rp=diff===0?`<span class="pill pill-green">✓ All back</span>`:diff<0?`<span class="pill pill-red">${Math.abs(diff)} missing</span>`:`<span class="pill pill-amber">+${diff} extra</span>`;
+            const rp=ret===0&&diff!==0
+              ?`<span class="pill pill-amber">Not counted</span>`
+              :diff===0
+                ?`<span class="pill pill-green">✓ All back</span>`
+                :diff<0
+                  ?`<span class="pill pill-red">${Math.abs(diff)} missing</span>`
+                  :`<span class="pill pill-amber">+${diff} extra</span>`;
             return`<tr>
               <td><span style="display:flex;align-items:center;gap:7px"><i class="ti ${iconFor(name)}" style="font-size:16px;color:var(--text-hint)"></i>${name}</span></td>
-              <td style="font-weight:600;color:var(--amber)">${count}</td>
-              <td><input class="verify-input" type="number" min="0" value="${ret}" onchange="setVerify('${name}',this.value,${count})" oninput="setVerify('${name}',this.value,${count})"></td>
+              <td style="font-weight:700;text-align:center;color:var(--amber)">${count}</td>
+              <td style="text-align:center">
+                <div class="stepper" style="justify-content:center">
+                  <button class="step-btn" onclick="stepVerify('${name}',${count},-1)">−</button>
+                  <span style="font-size:15px;font-weight:700;min-width:36px;text-align:center;color:var(--text)" id="vcount-${name.replace(/[^a-z]/gi,'_')}">${ret}</span>
+                  <button class="step-btn" onclick="stepVerify('${name}',${count},1)">+</button>
+                </div>
+              </td>
+              <td style="text-align:center">
+                <button onclick="setVerifyAll('${name}',${count})" class="btn btn-sm" style="font-size:11px;padding:4px 8px;color:var(--green);border-color:var(--green)">✓ All back</button>
+              </td>
               <td id="vr-${name.replace(/[^a-z]/gi,'_')}">${rp}</td>
             </tr>`;}).join('')}
           </tbody>
         </table>
-        <div style="margin-top:16px;padding-top:14px;border-top:0.5px solid var(--border);display:flex;justify-content:space-between;align-items:center">
-          <div id="verify-summary" style="font-size:13px">${getVerifySummary(merged)}</div>
-          <button class="btn btn-green" onclick="completeVerification('${activeCycle.id}')"><i class="ti ti-check"></i> Complete &amp; verify</button>
+        <div style="margin-top:16px;padding-top:14px;border-top:0.5px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+          <div id="verify-summary" style="font-size:13px">${getVerifySummaryV2(merged)}</div>
+          <button class="btn btn-green" onclick="completeVerification('${activeCycle.id}')"><i class="ti ti-check"></i> Save &amp; complete</button>
         </div>
       </div>`;
   }
@@ -606,25 +634,54 @@ function stepMachine(name,d){
   if(tot)tot.textContent=Object.values(machineItems).reduce((s,v)=>s+v,0);
 }
 
-function setVerify(name,val,sentCount){
-  verifyItems[name]=Math.max(0,Number(val)||0);
-  const diff=verifyItems[name]-sentCount;
-  const pill=diff===0?`<span class="pill pill-green">✓ All back</span>`:diff<0?`<span class="pill pill-red">${Math.abs(diff)} missing</span>`:`<span class="pill pill-amber">+${diff} extra</span>`;
-  const el=document.getElementById('vr-'+name.replace(/[^a-z]/gi,'_'));
-  if(el)el.innerHTML=pill;
-  const activeCycle=washCycles.find(c=>c.status!=='complete');
-  if(activeCycle){const sum=document.getElementById('verify-summary');if(sum)sum.innerHTML=getVerifySummary(getMergedSent(activeCycle));}
+function stepVerify(name,sentCount,delta){
+  verifyItems[name]=Math.max(0,(verifyItems[name]||0)+delta);
+  updateVerifyRow(name,sentCount);
 }
 
-function getVerifySummary(mergedSent){
-  const m=Object.entries(mergedSent).reduce((s,[name,count])=>{
-    const ret=verifyItems[name]!==undefined?verifyItems[name]:count;
-    return s+Math.max(0,count-ret);
-  },0);
-  return m>0
-    ?`<span style="color:var(--red)"><i class="ti ti-alert-circle"></i> ${m} item(s) will be marked missing</span>`
-    :`<span style="color:var(--green)"><i class="ti ti-circle-check"></i> All items accounted for</span>`;
+function setVerifyAll(name,sentCount){
+  verifyItems[name]=sentCount;
+  updateVerifyRow(name,sentCount);
 }
+
+function updateVerifyRow(name,sentCount){
+  const ret=verifyItems[name]||0;
+  const key=name.replace(/[^a-z]/gi,'_');
+  // Update count display
+  const countEl=document.getElementById('vcount-'+key);
+  if(countEl)countEl.textContent=ret;
+  // Update result pill
+  const diff=ret-sentCount;
+  let pill;
+  if(ret===0&&diff!==0) pill=`<span class="pill pill-amber">Not counted</span>`;
+  else if(diff===0) pill=`<span class="pill pill-green">✓ All back</span>`;
+  else if(diff<0) pill=`<span class="pill pill-red">${Math.abs(diff)} missing</span>`;
+  else pill=`<span class="pill pill-amber">+${diff} extra</span>`;
+  const resultEl=document.getElementById('vr-'+key);
+  if(resultEl)resultEl.innerHTML=pill;
+  // Update summary
+  const activeCycle=washCycles.find(c=>c.status!=='complete');
+  if(activeCycle){const sum=document.getElementById('verify-summary');if(sum)sum.innerHTML=getVerifySummaryV2(getMergedSent(activeCycle));}
+}
+
+function getVerifySummaryV2(mergedSent){
+  const entries=Object.entries(mergedSent);
+  const notCounted=entries.filter(([name,count])=>(verifyItems[name]||0)===0&&count>0);
+  const missing=entries.filter(([name,count])=>(verifyItems[name]||0)>0&&(verifyItems[name]||0)<count);
+  const totalMissing=missing.reduce((s,[name,count])=>s+(count-(verifyItems[name]||0)),0);
+  if(notCounted.length>0)
+    return`<span style="color:var(--amber)"><i class="ti ti-clock"></i> ${notCounted.length} item(s) not yet counted</span>`;
+  if(totalMissing>0)
+    return`<span style="color:var(--red)"><i class="ti ti-alert-circle"></i> ${totalMissing} item(s) will be marked missing</span>`;
+  return`<span style="color:var(--green)"><i class="ti ti-circle-check"></i> All items accounted for — ready to complete</span>`;
+}
+
+// Keep old setVerify for backward compat
+function setVerify(name,val,sentCount){
+  verifyItems[name]=Math.max(0,Number(val)||0);
+  updateVerifyRow(name,sentCount);
+}
+function getVerifySummary(mergedSent){return getVerifySummaryV2(mergedSent);}
 
 async function startWash(){
   const items=Object.entries(machineItems).filter(([,v])=>v>0).map(([name,count])=>({name,count}));
