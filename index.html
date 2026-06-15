@@ -414,7 +414,7 @@ function renderDashboard(){
   if(!hItems.length){hc.innerHTML='<div class="empty-state"><i class="ti ti-basket"></i><p>Hamper is empty.<br>Add items using the quick add panel.</p></div>';}
   else{hc.innerHTML=hItems.map(([name,count])=>`<div class="hamper-item"><span class="hi-name"><i class="ti ${iconFor(name)}"></i>${name}</span><span class="hi-count">${count}</span></div>`).join('')+`<div style="margin-top:12px;padding-top:10px;border-top:0.5px solid var(--border);display:flex;justify-content:flex-end"><a style="font-size:12px;color:var(--green);cursor:pointer" onclick="navigate('washday')">Start wash →</a></div>`;}
   const strip=document.getElementById('active-cycle-strip');
-  if(activeCycle){strip.style.display='block';document.getElementById('active-cycle-title').textContent=`Machine wash — cycle #${activeCycle.cycleNumber}`;document.getElementById('active-cycle-status').textContent=activeCycle.status;document.getElementById('active-cycle-grid').innerHTML=(activeCycle.itemsSent||[]).map(item=>{const back=(activeCycle.itemsBack||[]).find(b=>b.name===item.name);const isDone=back!==undefined;const isMissing=isDone&&back.count<item.count;const cls=isDone?(isMissing?'mc-miss':'mc-ok'):'mc-pend';const st=isDone?(isMissing?`${item.count-back.count} missing`:'✓ All back'):'Not verified';const sc=isDone?(isMissing?'miss':'ok'):'pend';return`<div class="mc-card ${cls}"><div class="mc-name">${item.name}</div><div class="mc-sent">${item.count} <span class="mc-back">${isDone?`→ ${back.count} back`:'→ ?'}</span></div><div class="mc-status ${sc}">${st}</div></div>`;}).join('');}
+  if(activeCycle){strip.style.display='block';document.getElementById('active-cycle-title').textContent=`Machine wash — cycle #${activeCycle.cycleNumber}`;document.getElementById('active-cycle-status').textContent=activeCycle.status;const _dash_merged=getMergedSent(activeCycle);const _dash_mergedArr=Object.entries(_dash_merged).filter(([,v])=>v>0);document.getElementById('active-cycle-grid').innerHTML=_dash_mergedArr.map(([name,count])=>{const back=(activeCycle.itemsBack||[]).find(b=>b.name===name);const isDone=back!==undefined;const isMissing=isDone&&back.count<count;const cls=isDone?(isMissing?'mc-miss':'mc-ok'):'mc-pend';const st=isDone?(isMissing?`${count-back.count} missing`:'✓ All back'):'Not verified';const sc=isDone?(isMissing?'miss':'ok'):'pend';return`<div class="mc-card ${cls}"><div class="mc-name">${name}</div><div class="mc-sent">${count} <span class="mc-back">${isDone?`→ ${back.count} back`:'→ ?'}</span></div><div class="mc-status ${sc}">${st}</div></div>`;}).join('');}
   else{strip.style.display='none';}
   const months=getLast6Months();
   const mWashed=months.map(m=>completed.filter(c=>{const d=tsDate(c.startedAt);return d&&sameMonth(d,m);}).reduce((s,c)=>s+totalCount(c.itemsSent),0));
@@ -453,12 +453,20 @@ async function deleteEntry(id){await db.collection('hamperEntries').doc(id).dele
 // Verify is against the merged itemsSent total.
 
 function getMergedSent(cycle){
-  // Build merged totals from all batches
   const merged={};
-  (cycle.batches||[]).forEach(b=>b.items.forEach(i=>{merged[i.name]=(merged[i.name]||0)+i.count;}));
-  // Fallback for old cycles that have itemsSent directly
-  if(!cycle.batches&&cycle.itemsSent) cycle.itemsSent.forEach(i=>{merged[i.name]=(merged[i.name]||0)+i.count;});
+  if(cycle.batches&&cycle.batches.length){
+    cycle.batches.forEach(b=>{(b.items||[]).forEach(i=>{merged[i.name]=(merged[i.name]||0)+i.count;});});
+  } else {
+    (cycle.itemsSent||[]).forEach(i=>{merged[i.name]=(merged[i.name]||0)+i.count;});
+  }
   return merged;
+}
+function parseBatchDate(s){
+  if(!s)return null;
+  if(typeof s==='string')return new Date(s);
+  if(s.seconds)return new Date(s.seconds*1000);
+  if(s.toDate)return s.toDate();
+  return new Date(s);
 }
 
 function renderWashDay(){
@@ -532,7 +540,7 @@ function renderWashDay(){
           ${batches.map((b,i)=>`
             <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:0.5px solid var(--border);font-size:12px">
               <span class="pill pill-blue">Batch ${i+1}</span>
-              <span style="color:var(--text-muted)">${b.sentAt?new Date(b.sentAt.seconds?b.sentAt.seconds*1000:b.sentAt).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):'—'}</span>
+              <span style="color:var(--text-muted)">${b.sentAt?parseBatchDate(b.sentAt).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):'—'}</span>
               <span style="color:var(--text);">${b.items.map(i=>`${i.name} ×${i.count}`).join(', ')}</span>
             </div>`).join('')}
         `:''}
@@ -622,41 +630,52 @@ async function startWash(){
   const items=Object.entries(machineItems).filter(([,v])=>v>0).map(([name,count])=>({name,count}));
   if(!items.length){toast('Select at least one item first');return;}
 
-  // Deduct from hamper
+  // Deduct selected items from hamper
   const newTotals={...hamperTotals};
   items.forEach(({name,count})=>{newTotals[name]=Math.max(0,(newTotals[name]||0)-count);});
 
   const activeCycle=washCycles.find(c=>c.status!=='complete');
-  const batch={sentAt:new Date().toISOString(),items};
+  const newBatch={sentAt:new Date().toISOString(),items:items};
 
   try{
-    await db.collection('hamperTotals').doc('default').set({totals:newTotals,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+    // Save updated hamper first
+    await db.collection('hamperTotals').doc('default').set({
+      totals:newTotals,
+      updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+    });
 
     if(activeCycle){
-      // Add batch to existing active cycle — merge totals
-      const existingBatches=activeCycle.batches||[];
-      const newBatches=[...existingBatches,batch];
-      // Rebuild merged itemsSent
+      // Merge new batch into existing active cycle
+      const existingBatches = Array.isArray(activeCycle.batches) ? activeCycle.batches : [];
+      const allBatches = [...existingBatches, newBatch];
+
+      // Rebuild merged totals from ALL batches
       const merged={};
-      newBatches.forEach(b=>b.items.forEach(i=>{merged[i.name]=(merged[i.name]||0)+i.count;}));
+      allBatches.forEach(b=>{
+        (b.items||[]).forEach(i=>{merged[i.name]=(merged[i.name]||0)+i.count;});
+      });
       const mergedArr=Object.entries(merged).map(([name,count])=>({name,count}));
+
       await db.collection('washCycles').doc(activeCycle.id).update({
-        batches:newBatches,
-        itemsSent:mergedArr,
-        updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+        batches: allBatches,
+        itemsSent: mergedArr,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
       });
-      toast(`Added to cycle #${activeCycle.cycleNumber} — ${items.map(i=>`${i.name} ×${i.count}`).join(', ')}`);
-    }else{
-      // Start a new cycle
-      const nextNum=washCycles.filter(c=>c.status==='complete').length+1;
+      toast('Added to cycle #'+activeCycle.cycleNumber+': '+items.map(i=>i.name+' ×'+i.count).join(', '));
+    } else {
+      // No active cycle — start a fresh one
+      const nextNum = washCycles.filter(c=>c.status==='complete').length + 1;
       await db.collection('washCycles').add({
-        cycleNumber:nextNum,status:'drying',
-        batches:[batch],
-        itemsSent:items,
-        itemsBack:[],missing:[],
-        startedAt:firebase.firestore.FieldValue.serverTimestamp(),completedAt:null
+        cycleNumber: nextNum,
+        status: 'drying',
+        batches: [newBatch],
+        itemsSent: items,
+        itemsBack: [],
+        missing: [],
+        startedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        completedAt: null
       });
-      toast(`Cycle #${nextNum} started — ${items.map(i=>`${i.name} ×${i.count}`).join(', ')}`);
+      toast('Cycle #'+nextNum+' started: '+items.map(i=>i.name+' ×'+i.count).join(', '));
     }
     machineItems={};
     verifyItems={};
@@ -664,22 +683,39 @@ async function startWash(){
 }
 
 async function completeVerification(cycleId){
-  const cycle=washCycles.find(c=>c.id===cycleId);if(!cycle)return;
+  const cycle=washCycles.find(c=>c.id===cycleId);
+  if(!cycle)return;
+
+  // Always use getMergedSent — rebuilds from batches, never from stale itemsSent
   const merged=getMergedSent(cycle);
-  const itemsBack=Object.entries(merged).map(([name,count])=>({name,count:verifyItems[name]!==undefined?Number(verifyItems[name]):count}));
+
+  // Build itemsBack from what user entered in verify inputs
+  const itemsBack=Object.entries(merged).map(([name,sentCount])=>({
+    name,
+    count: verifyItems[name]!==undefined ? Number(verifyItems[name]) : sentCount
+  }));
+
+  // Calculate missing: sent - returned (only positive differences)
   const missing=[];
   Object.entries(merged).forEach(([name,sentCount])=>{
     const back=itemsBack.find(b=>b.name===name);
-    if(back&&back.count<sentCount)missing.push({name,count:sentCount-back.count});
+    const backCount=back?back.count:0;
+    if(backCount<sentCount) missing.push({name,count:sentCount-backCount});
   });
+
   try{
     await db.collection('washCycles').doc(cycleId).update({
-      itemsBack,missing,status:'complete',
+      itemsBack,
+      missing,
+      status:'complete',
       completedAt:firebase.firestore.FieldValue.serverTimestamp()
     });
     verifyItems={};
     machineItems={};
-    toast(missing.length?`Cycle complete — ${missing.reduce((s,m)=>s+m.count,0)} item(s) missing`:'Cycle complete — all items accounted for!');
+    const totalMissing=missing.reduce((s,m)=>s+m.count,0);
+    toast(totalMissing>0
+      ?'Cycle complete — '+totalMissing+' item(s) missing: '+missing.map(m=>m.name+' ×'+m.count).join(', ')
+      :'Cycle complete — all items accounted for!');
   }catch(e){toast('Error saving');console.error(e);}
 }
 
