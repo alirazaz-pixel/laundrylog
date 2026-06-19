@@ -376,7 +376,18 @@ function closeSidebar(){document.getElementById('sidebar').classList.remove('ope
 let acIndex=-1;
 function allItems(){return[...new Set([...DEFAULT_ITEMS,...customItems])];}
 function acFilter(val){const drop=document.getElementById('ac-drop');if(!val.trim()){drop.style.display='none';return;}const matches=allItems().filter(i=>i.toLowerCase().includes(val.toLowerCase())).slice(0,7);if(!matches.length){drop.style.display='none';return;}drop.innerHTML=matches.map(m=>`<div class="ac-opt" data-val="${m}" onmousedown="acPick('${m}')">${m}</div>`).join('');drop.style.display='block';acIndex=-1;}
-function acPick(val){document.getElementById('ac-input').value='';document.getElementById('ac-drop').style.display='none';quickCounts[val]=(quickCounts[val]||0)+1;renderQAList();}
+function acPick(val){
+  document.getElementById('ac-input').value='';
+  document.getElementById('ac-drop').style.display='none';
+  quickCounts[val]=(quickCounts[val]||0)+1;
+  // If this item isn't already in the permanent list, save it so it always shows
+  if(!DEFAULT_QA.includes(val)&&!customItems.includes(val)){
+    const updated=[...customItems,val];
+    DEFAULT_QA.push(val);
+    saveCustomItems(updated); // saves to Firebase silently
+  }
+  renderQAList();
+}
 function closeAC(){document.getElementById('ac-drop').style.display='none';}
 function acKeydown(e){const opts=document.querySelectorAll('#ac-drop .ac-opt');if(e.key==='ArrowDown'){acIndex=Math.min(acIndex+1,opts.length-1);opts.forEach((o,i)=>o.classList.toggle('selected',i===acIndex));e.preventDefault();}else if(e.key==='ArrowUp'){acIndex=Math.max(acIndex-1,0);opts.forEach((o,i)=>o.classList.toggle('selected',i===acIndex));e.preventDefault();}else if(e.key==='Enter'){if(acIndex>=0&&opts[acIndex])acPick(opts[acIndex].dataset.val);else{const v=document.getElementById('ac-input').value.trim();if(v)acPick(v);}}else if(e.key==='Escape')closeAC();}
 
