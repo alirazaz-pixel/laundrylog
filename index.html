@@ -176,9 +176,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
         <div class="card">
           <div class="card-title">Monthly overview</div>
           <div class="chart-legend">
+            <span class="leg-item"><span class="leg-sq" style="background:#378ADD"></span>Added to hamper</span>
             <span class="leg-item"><span class="leg-sq" style="background:#5DCAA5"></span>Items washed</span>
             <span class="leg-item"><span class="leg-sq" style="background:#F09595"></span>Missing</span>
-            <span class="leg-item"><span class="leg-sq" style="background:#378ADD;border-radius:50%"></span>Cycles</span>
+            <span class="leg-item"><span class="leg-sq" style="background:#BA7517;border-radius:50%"></span>Cycles</span>
           </div>
           <div style="position:relative;height:200px"><canvas id="main-chart"></canvas></div>
         </div>
@@ -187,6 +188,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
           <div style="position:relative;height:140px;margin-bottom:10px"><canvas id="type-chart"></canvas></div>
           <div id="type-legend" style="display:grid;grid-template-columns:1fr 1fr;gap:4px"></div>
         </div>
+      </div>
+      <!-- Recent hamper activity -->
+      <div class="card">
+        <div class="card-title">Recent hamper activity <a onclick="navigate('history')" style="font-size:11px;font-weight:400;color:var(--green);cursor:pointer;text-transform:none;letter-spacing:0">View all →</a></div>
+        <div id="recent-hamper-activity"></div>
       </div>
     </div>
 
@@ -218,7 +224,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
     <!-- HISTORY -->
     <div id="page-history" class="page">
       <div class="page-header">
-        <div><h1 class="page-title">Wash history</h1><p class="page-sub">Complete record of every cycle</p></div>
+        <div><h1 class="page-title">History</h1><p class="page-sub">Complete record of wash cycles and hamper entries</p></div>
         <div style="display:flex;gap:8px">
           <button class="btn btn-sm" onclick="doExportExcel()"><i class="ti ti-table-export"></i> Excel</button>
           <button class="btn btn-sm" onclick="doExportPDF()"><i class="ti ti-file-type-pdf"></i> PDF</button>
@@ -228,8 +234,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
         <div class="metric-card"><div class="metric-label">Cycles in period</div><div class="metric-value" id="h-cycles">0</div></div>
         <div class="metric-card"><div class="metric-label">Items washed</div><div class="metric-value mv-green" id="h-washed">0</div></div>
         <div class="metric-card"><div class="metric-label">Items missing</div><div class="metric-value mv-red" id="h-missing">0</div></div>
-        <div class="metric-card"><div class="metric-label">In hamper now</div><div class="metric-value" id="h-hamper">0</div></div>
+        <div class="metric-card"><div class="metric-label">Items to hamper</div><div class="metric-value mv-green" id="h-hamper-added">0</div></div>
       </div>
+      <!-- Tabs -->
+      <div style="display:flex;gap:0;margin-bottom:16px;border-bottom:0.5px solid var(--border)">
+        <button id="tab-wash" onclick="switchHistoryTab('wash')" style="padding:9px 20px;font-size:13px;font-weight:500;border:none;border-bottom:2px solid var(--green);color:var(--green);background:none;cursor:pointer">
+          <i class="ti ti-wash"></i> Wash cycles
+        </button>
+        <button id="tab-hamper" onclick="switchHistoryTab('hamper')" style="padding:9px 20px;font-size:13px;font-weight:500;border:none;border-bottom:2px solid transparent;color:var(--text-muted);background:none;cursor:pointer">
+          <i class="ti ti-basket"></i> Hamper entries
+        </button>
+      </div>
+      <!-- Shared filter bar -->
       <div class="card">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px">
           <div class="filter-bar">
@@ -245,10 +261,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
             <button class="btn btn-sm" onclick="doExportPDF()"><i class="ti ti-file-type-pdf"></i> PDF</button>
           </div>
         </div>
-        <div style="overflow-x:auto">
+        <!-- Wash cycles table -->
+        <div id="hist-wash-section" style="overflow-x:auto">
           <table class="data-table">
             <thead><tr><th>Date</th><th>Time</th><th>Cycle</th><th>Items sent</th><th>Total</th><th>Missing detail</th><th>Status</th><th></th></tr></thead>
             <tbody id="history-body"></tbody>
+          </table>
+        </div>
+        <!-- Hamper entries table -->
+        <div id="hist-hamper-section" style="display:none;overflow-x:auto">
+          <table class="data-table">
+            <thead><tr><th>Date</th><th>Time</th><th>Type</th><th>Items</th><th>Count</th></tr></thead>
+            <tbody id="hamper-history-body"></tbody>
           </table>
         </div>
       </div>
@@ -446,15 +470,27 @@ function renderDashboard(){
   const mWashed=months.map(m=>completed.filter(c=>{const d=tsDate(c.startedAt);return d&&sameMonth(d,m);}).reduce((s,c)=>s+totalCount(c.itemsSent),0));
   const mMissing=months.map(m=>completed.filter(c=>{const d=tsDate(c.startedAt);return d&&sameMonth(d,m);}).reduce((s,c)=>s+totalCount(c.missing),0));
   const mCycles=months.map(m=>completed.filter(c=>{const d=tsDate(c.startedAt);return d&&sameMonth(d,m);}).length);
+  // Hamper additions per month — count only positive additions
+  const mHamper=months.map(m=>hamperEntries.filter(e=>{const d=tsDate(e.createdAt);return d&&sameMonth(d,m);}).reduce((s,e)=>s+(e.items||[]).filter(i=>i.count>0).reduce((a,i)=>a+i.count,0),0));
   const mLabels=months.map(m=>m.toLocaleDateString('en-GB',{month:'short'}));
   if(mainChart)mainChart.destroy();
-  mainChart=new Chart(document.getElementById('main-chart'),{data:{labels:mLabels,datasets:[{type:'bar',label:'Washed',data:mWashed,backgroundColor:'#5DCAA5',borderRadius:3,yAxisID:'y'},{type:'bar',label:'Missing',data:mMissing,backgroundColor:'#F09595',borderRadius:3,yAxisID:'y'},{type:'line',label:'Cycles',data:mCycles,borderColor:'#378ADD',backgroundColor:'transparent',pointBackgroundColor:'#378ADD',pointRadius:3,tension:.3,yAxisID:'y1'}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{font:{size:10}},grid:{display:false}},y:{ticks:{font:{size:10}},grid:{color:'rgba(136,135,128,.1)'},beginAtZero:true},y1:{position:'right',ticks:{font:{size:10},stepSize:1},grid:{display:false},beginAtZero:true,max:8}}}});
+  mainChart=new Chart(document.getElementById('main-chart'),{data:{labels:mLabels,datasets:[
+    {type:'bar',label:'Added to hamper',data:mHamper,backgroundColor:'#378ADD',borderRadius:3,yAxisID:'y'},
+    {type:'bar',label:'Washed',data:mWashed,backgroundColor:'#5DCAA5',borderRadius:3,yAxisID:'y'},
+    {type:'bar',label:'Missing',data:mMissing,backgroundColor:'#F09595',borderRadius:3,yAxisID:'y'},
+    {type:'line',label:'Cycles',data:mCycles,borderColor:'#BA7517',backgroundColor:'transparent',pointBackgroundColor:'#BA7517',pointRadius:3,tension:.3,yAxisID:'y1'}
+  ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{font:{size:10}},grid:{display:false}},y:{ticks:{font:{size:10}},grid:{color:'rgba(136,135,128,.1)'},beginAtZero:true},y1:{position:'right',ticks:{font:{size:10},stepSize:1},grid:{display:false},beginAtZero:true,max:8}}}});
   const typeBreakdown={};
   completed.filter(c=>{const d=tsDate(c.startedAt);return d&&sameMonth(d,now);}).forEach(c=>c.itemsSent?.forEach(i=>{typeBreakdown[i.name]=(typeBreakdown[i.name]||0)+i.count;}));
   const typeEntries=Object.entries(typeBreakdown).sort((a,b)=>b[1]-a[1]).slice(0,5);
   if(typeChart)typeChart.destroy();
   if(typeEntries.length){typeChart=new Chart(document.getElementById('type-chart'),{type:'doughnut',data:{labels:typeEntries.map(([n])=>n),datasets:[{data:typeEntries.map(([,v])=>v),backgroundColor:COLORS,borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,cutout:'62%',plugins:{legend:{display:false}}}});document.getElementById('type-legend').innerHTML=typeEntries.map(([n,v],i)=>`<div style="font-size:11px;display:flex;align-items:center;gap:4px;color:var(--text-muted)"><span style="width:8px;height:8px;border-radius:2px;background:${COLORS[i]};flex-shrink:0"></span>${n} (${v})</div>`).join('');}
   else{document.getElementById('type-legend').innerHTML='<p style="font-size:12px;color:var(--text-hint)">No washes this month yet</p>';}
+  // Recent hamper activity — last 6 entries
+  const recentEl=document.getElementById('recent-hamper-activity');
+  const recent=hamperEntries.slice(0,6);
+  if(!recent.length){recentEl.innerHTML='<div class="empty-state" style="padding:16px"><i class="ti ti-basket"></i><p>No hamper entries yet</p></div>';}
+  else{recentEl.innerHTML=recent.map(e=>{const additions=(e.items||[]).filter(i=>i.count>0);const removals=(e.items||[]).filter(i=>i.count<0);const addText=additions.map(i=>`${i.name} ×${i.count}`).join(', ');const remText=removals.map(i=>`${i.name} ×${Math.abs(i.count)}`).join(', ');return`<div style="display:flex;align-items:flex-start;gap:12px;padding:9px 0;border-bottom:0.5px solid var(--border)"><div style="flex-shrink:0;text-align:right;min-width:72px"><div style="font-size:12px;font-weight:500">${fmtDate(e.createdAt)}</div><div style="font-size:11px;color:var(--text-hint)">${fmtTime(e.createdAt)}</div></div><div style="flex:1;font-size:12px">${addText?`<span style="color:var(--green)"><i class="ti ti-plus" style="font-size:11px"></i> ${addText}</span>`:''}${addText&&remText?'<br>':''}${remText?`<span style="color:var(--red)"><i class="ti ti-minus" style="font-size:11px"></i> ${remText}</span>`:''}</div></div>`;}).join('');}
 }
 
 // ── Hamper page ──────────────────────────────────────────────────────────────
@@ -803,32 +839,48 @@ async function completeVerification(cycleId){
 }
 
 // ── History ──────────────────────────────────────────────────────────────────
+let currentHistoryTab='wash'; // 'wash' or 'hamper'
+
+function switchHistoryTab(tab){
+  currentHistoryTab=tab;
+  // Update tab styles
+  document.getElementById('tab-wash').style.borderBottomColor=tab==='wash'?'var(--green)':'transparent';
+  document.getElementById('tab-wash').style.color=tab==='wash'?'var(--green)':'var(--text-muted)';
+  document.getElementById('tab-hamper').style.borderBottomColor=tab==='hamper'?'var(--green)':'transparent';
+  document.getElementById('tab-hamper').style.color=tab==='hamper'?'var(--green)':'var(--text-muted)';
+  // Show/hide sections
+  document.getElementById('hist-wash-section').style.display=tab==='wash'?'block':'none';
+  document.getElementById('hist-hamper-section').style.display=tab==='hamper'?'block':'none';
+  renderHistory();
+}
+
 function getFilteredCycles(){const from=document.getElementById('f-from')?.value;const to=document.getElementById('f-to')?.value;return washCycles.filter(c=>{const d=tsDate(c.startedAt);if(!d)return false;if(from&&d<new Date(from))return false;if(to&&d>new Date(to+'T23:59:59'))return false;return true;});}
+
+function getFilteredHamperEntries(){const from=document.getElementById('f-from')?.value;const to=document.getElementById('f-to')?.value;return hamperEntries.filter(e=>{const d=tsDate(e.createdAt);if(!d)return false;if(from&&d<new Date(from))return false;if(to&&d>new Date(to+'T23:59:59'))return false;return true;});}
 
 function renderHistory(){
   const fFrom=document.getElementById('f-from'),fTo=document.getElementById('f-to');
   if(fFrom&&!fFrom.value){const d=new Date();d.setMonth(d.getMonth()-3);fFrom.value=d.toISOString().split('T')[0];}
   if(fTo&&!fTo.value)fTo.value=new Date().toISOString().split('T')[0];
   const filtered=getFilteredCycles();
-  const hamperTotal=Object.values(hamperTotals).reduce((s,v)=>s+Math.max(0,v),0);
+  const filteredHamper=getFilteredHamperEntries();
   const totalWashed=filtered.reduce((s,c)=>s+totalCount(c.itemsSent),0);
-  // Net missing = original missing minus anything found later
-  const totalMissing=filtered.reduce((s,c)=>{
-    const orig=totalCount(c.missing);
-    const found=(c.foundItems||[]).reduce((a,f)=>a+f.count,0);
-    return s+Math.max(0,orig-found);
-  },0);
+  const totalMissing=filtered.reduce((s,c)=>{const orig=totalCount(c.missing);const found=(c.foundItems||[]).reduce((a,f)=>a+f.count,0);return s+Math.max(0,orig-found);},0);
+  const totalHamperAdded=filteredHamper.reduce((s,e)=>s+(e.items||[]).filter(i=>i.count>0).reduce((a,i)=>a+i.count,0),0);
   document.getElementById('h-cycles').textContent=filtered.length;
   document.getElementById('h-washed').textContent=totalWashed;
   document.getElementById('h-missing').textContent=totalMissing;
   document.getElementById('h-missing').className='metric-value'+(totalMissing>0?' mv-red':'');
-  document.getElementById('h-hamper').textContent=hamperTotal;
-  document.getElementById('h-count').textContent=filtered.length+' record'+(filtered.length!==1?'s':'');
+  document.getElementById('h-hamper-added').textContent=totalHamperAdded;
+  // Count label depends on active tab
+  const recCount=currentHistoryTab==='wash'?filtered.length:filteredHamper.length;
+  document.getElementById('h-count').textContent=recCount+' record'+(recCount!==1?'s':'');
+
+  // ── Wash cycles table ──
   const tbody=document.getElementById('history-body');
   if(!filtered.length){
     tbody.innerHTML=`<tr><td colspan="9"><div class="empty-state"><i class="ti ti-history"></i><p>No cycles in this period.<br>Try adjusting the date range.</p></div></td></tr>`;
-    return;
-  }
+  } else {
   tbody.innerHTML=filtered.map(c=>{
     const origMissing=totalCount(c.missing);
     const foundTotal=(c.foundItems||[]).reduce((a,f)=>a+f.count,0);
@@ -875,6 +927,37 @@ function renderHistory(){
       <td>${foundBtn}</td>
     </tr>`;
   }).join('');
+  }
+
+  // ── Hamper entries table ──
+  const htbody=document.getElementById('hamper-history-body');
+  if(!filteredHamper.length){
+    htbody.innerHTML=`<tr><td colspan="5"><div class="empty-state"><i class="ti ti-basket"></i><p>No hamper entries in this period.<br>Try adjusting the date range.</p></div></td></tr>`;
+  } else {
+    htbody.innerHTML=filteredHamper.map(e=>{
+      const additions=(e.items||[]).filter(i=>i.count>0);
+      const removals=(e.items||[]).filter(i=>i.count<0);
+      const isAdd=additions.length>0&&removals.length===0;
+      const isRem=removals.length>0&&additions.length===0;
+      const typePill=isAdd
+        ?`<span class="pill pill-green">Added</span>`
+        :isRem
+          ?`<span class="pill pill-red">Removed</span>`
+          :`<span class="pill pill-amber">Mixed</span>`;
+      const itemsText=[
+        ...additions.map(i=>`<span style="color:var(--green)">+${i.count} ${i.name}</span>`),
+        ...removals.map(i=>`<span style="color:var(--red)">${i.count} ${i.name}</span>`)
+      ].join(', ');
+      const totalAbs=(e.items||[]).reduce((s,i)=>s+Math.abs(i.count),0);
+      return`<tr>
+        <td style="font-weight:500;white-space:nowrap">${fmtDate(e.createdAt)}</td>
+        <td style="color:var(--text-muted);white-space:nowrap">${fmtTime(e.createdAt)}</td>
+        <td>${typePill}</td>
+        <td style="font-size:12px">${itemsText}</td>
+        <td style="font-weight:600;text-align:center">${totalAbs}</td>
+      </tr>`;
+    }).join('');
+  }
 }
 
 // ── Found items modal ─────────────────────────────────────────────────────────
@@ -1063,6 +1146,20 @@ function doExportExcel(){
   const monthMap={};washCycles.filter(c=>c.status==='complete').forEach(c=>{const d=tsDate(c.startedAt);if(!d)return;const k=d.toLocaleDateString('en-GB',{month:'short',year:'numeric'});if(!monthMap[k])monthMap[k]={washed:0,missing:0,cycles:0};monthMap[k].washed+=totalCount(c.itemsSent);monthMap[k].missing+=totalCount(c.missing);monthMap[k].cycles+=1;});
   const ws3=XLSX.utils.aoa_to_sheet([['Month','Cycles','Items washed','Items missing'],...Object.entries(monthMap).map(([m,v])=>[m,v.cycles,v.washed,v.missing])]);
   ws3['!cols']=[{wch:16},{wch:8},{wch:14},{wch:14}];XLSX.utils.book_append_sheet(wb,ws3,'Monthly Stats');
+  // Sheet 4: Hamper entries
+  const filteredHamper=getFilteredHamperEntries();
+  const ws4=XLSX.utils.aoa_to_sheet([
+    ['Date','Time','Type','Items','Total count'],
+    ...filteredHamper.map(e=>{
+      const additions=(e.items||[]).filter(i=>i.count>0);
+      const removals=(e.items||[]).filter(i=>i.count<0);
+      const type=additions.length&&!removals.length?'Added':removals.length&&!additions.length?'Removed':'Mixed';
+      const itemsText=(e.items||[]).map(i=>`${i.count>0?'+':''}${i.count} ${i.name}`).join(', ');
+      return[fmtDate(e.createdAt),fmtTime(e.createdAt),type,itemsText,(e.items||[]).reduce((s,i)=>s+Math.abs(i.count),0)];
+    })
+  ]);
+  ws4['!cols']=[{wch:14},{wch:10},{wch:10},{wch:50},{wch:12}];
+  XLSX.utils.book_append_sheet(wb,ws4,'Hamper Entries');
   XLSX.writeFile(wb,`laundrylog-${new Date().toISOString().split('T')[0]}.xlsx`);toast('Excel exported');
 }
 
